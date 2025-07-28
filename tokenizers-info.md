@@ -1,5 +1,8 @@
 Tokenizers used for each language:
 
+Only the tokenizers required for the languages you analyze must be installed.
+If a tokenizer is missing, the tool falls back to NLTK's `WordPunctTokenizer` and records a warning.
+
 * as, ca, cs, co, de, el, en, es, fi, fr, ga, hu, is, it, lt, lv, mni, nl, pl, pt, ro, ru, sk, sl, sv, ta: sacremoses (MosesTokenizer) (https://github.com/hplt-project/sacremoses)
 * da, et, no, tr: NLTK word tokenizer (https://www.nltk.org/api/nltk.tokenize.html)
 * sr, mk, bg, hr: Reldi (https://github.com/clarinsi/reldi-tokeniser)
