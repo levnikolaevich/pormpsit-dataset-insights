@@ -15,6 +15,17 @@ JOBS_READCORPUS=$(($JOBS/3*2))
 
 GPU_BATCHSIZE=256
 
+# Optional Domain classification configuration via environment variables
+if [ ! -z "$DOMAIN_TOPK" ]; then
+        DL_TOPK_ARG="--topk $DOMAIN_TOPK"
+fi
+if [ ! -z "$DOMAIN_MINCONF" ]; then
+        DL_MINCONF_ARG="--minconf $DOMAIN_MINCONF"
+fi
+if [ ! -z "$DOMAIN_REVISION" ]; then
+        DL_REVISION_ARG="--revision $DOMAIN_REVISION"
+fi
+
 if [[ $* == *--no-cache* ]]
 then
         PARALLEL_CACHE_CMD=""
@@ -77,8 +88,12 @@ hbs_langs=(hr sr bs me)
 registerlabels_langs=(af sq am ar hy as az eu be bn bs br bg my ca zh hr cs da nl en eo et tl fi fr gl ka de el gu ha he hi hu is id ga it ja jv \
 	kn kk km ko ku ky lo la lv lt mk mg ms ml mr mn ne no nn nb or om ps fa pl pt pa ro ru sa gd sr sd si sk sl so es su sw sv ta te th tr uk ur ug uz vi cy fy xh yi)
 
-# Use the same language support baseline for domain labels for now
-domainlabels_langs=("${registerlabels_langs[@]}")
+# NVIDIA multilingual-domain-classifier allowlist (52 languages). Override with DOMAIN_LANGS (space-separated codes)
+if [ -z "$DOMAIN_LANGS" ]; then
+domainlabels_langs=(ar az bg bn ca cs da de el es et fa fi fr gl he hi hr hu hy id is it ka kk kn ko lt lv mk ml mr ne nl no pl pt ro ru sk sl sq sr sv ta tr uk ur vi ja zh)
+else
+read -r -a domainlabels_langs <<< "$DOMAIN_LANGS"
+fi
 
 
 mkdir -p $datapath
@@ -462,11 +477,11 @@ elif [ "$langformat" == "mono" ]; then
                                 source /work/venvs/venv-rl/bin/activate
                                 echo "Running domain labels..."
                                 if [ "$extension" == "zst" ] || [ "$extension" == "zstd" ]; then
-                                        zstdcat $saved_file_path | python3 ./scripts/domainlabels.py --batchsize $GPU_BATCHSIZE > $tsv_file_path.dl
+                                        zstdcat $saved_file_path | python3 ./scripts/domainlabels.py --batchsize $GPU_BATCHSIZE $DL_TOPK_ARG $DL_MINCONF_ARG $DL_REVISION_ARG > $tsv_file_path.dl
                                 elif [ "$extension" == "parquet" ]; then
-                                        python3 scripts/deparquet.py $saved_file_path - | python3 ./scripts/domainlabels.py --batchsize $GPU_BATCHSIZE > $tsv_file_path.dl
+                                        python3 scripts/deparquet.py $saved_file_path - | python3 ./scripts/domainlabels.py --batchsize $GPU_BATCHSIZE $DL_TOPK_ARG $DL_MINCONF_ARG $DL_REVISION_ARG > $tsv_file_path.dl
                                 else
-                                        cat $saved_file_path | python3 ./scripts/domainlabels.py --batchsize $GPU_BATCHSIZE > $tsv_file_path.dl
+                                        cat $saved_file_path | python3 ./scripts/domainlabels.py --batchsize $GPU_BATCHSIZE $DL_TOPK_ARG $DL_MINCONF_ARG $DL_REVISION_ARG > $tsv_file_path.dl
                                 fi
                                 deactivate
                                 cat $tsv_file_path.dl | LC_ALL=C sort -S 50% --compress-program=zstd --parallel $JOBS | uniq -c | sort -nr > $tsv_file_path.dlcounts

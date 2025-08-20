@@ -42,11 +42,22 @@ Being:
 
 With the optional flags being:
 * `--no-register-labels`: Avoids obtaining Register Labels, that is a slow part of the pipeline. Recommended for large corpora or when not running on CPU.
-* `--no-domain-labels`: Skips EuroVoc domain classification, reducing runtime.
+* `--no-domain-labels`: Skips domain classification, reducing runtime.
 * `--no-cache`: Avoids using [cache](https://github.com/kpu/preprocess). Use this flag for very large corpora, when you consider that your unique segments (non-duplicates) won't fit in memory. This will make some parts of the pipeline slower, but it will still be able to run. This flag alone does not skip any feature.
 * `--debug`: Don't remove the workdir after finishing the run ('/work/transient/XXXXXX/`)
 
 The first two flags affect to the performance of the pipeline. You probably want to start with `--no-register-labels` and then add `--no-cache` if needed.
+
+### Domain labels configuration
+
+Domain labels use `nvidia/multilingual-domain-classifier` ([HF model card](https://huggingface.co/nvidia/multilingual-domain-classifier)). Optional configuration via environment variables (picked up by `runstats.sh` and propagated to the classifier):
+
+- `DOMAIN_TOPK` (int, default `3`): number of top labels per document to count.
+- `DOMAIN_MINCONF` (float, default `0.5`): minimum softmax confidence; if none exceed this threshold, `UNK` is emitted.
+- `DOMAIN_REVISION` (string, optional): model revision pin for reproducibility (applies to both model and tokenizer).
+- `DOMAIN_LANGS` (string, optional): space-separated allowlist of language codes for running domain classification. Defaults to the 52 languages supported by the model.
+
+Alternatively, you can pass the equivalent flags directly to the classifier script if you run it standalone: `--topk`, `--minconf`, `--revision`.
 
 
 ### Other scripts
@@ -83,7 +94,7 @@ The stats generated with this tool come in a handy yaml format with the followin
   -  `no_porn`: Percentage of segments having porn content (not available for all languages)
 - `monocleaner_scores`: Distribution of segments with a certain [Monocleaner](https://github.com/bitextor/monocleaner) score (only for monolingual corpora)
 - `register_labels`: Distribution of documents identified with a given web register by [web-register-classification-multilingual](https://huggingface.co/TurkuNLP/web-register-classification-multilingual) (only for monolingual documents)
-- `domain_labels`: Distribution of documents across [EuroVoc](https://huggingface.co/EuropeanParliament/eurovoc_2025) top-level domains (only for monolingual documents)
+- `domain_labels`: Distribution of documents across model-defined domains by [nvidia/multilingual-domain-classifier](https://huggingface.co/nvidia/multilingual-domain-classifier) (only for monolingual documents)
 - `sentence_pairs`: Total amount of segments (in the case of monolingual corpora) or segment pairs (in the case of parallel corpora)
 - `src_bytes`: Total size of source segments, uncompressed.
 - `src_chars`: Total amount of characters in source segments.

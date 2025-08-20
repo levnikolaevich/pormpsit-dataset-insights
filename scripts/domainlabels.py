@@ -5,7 +5,9 @@ import argparse
 import logging
 import json
 import torch
-from transformers import AutoModelForSequenceClassification, AutoTokenizer
+import torch.nn as nn
+from transformers import AutoModel, AutoTokenizer, AutoConfig
+from huggingface_hub import PyTorchModelHubMixin
 from util import logging_setup
 
 
@@ -39,6 +41,12 @@ def initialization():
     )
     groupO.add_argument("--raw", action="store_true", help="True if the input is already raw, non-json text")
     groupO.add_argument("--batchsize", type=int, default=256, help="GPU batch size")
+    # Number of labels to emit per document (1 keeps previous behavior)
+    groupO.add_argument("--topk", type=int, default=3, help="Number of top labels to output per document")
+    # Minimum softmax confidence to accept a label; otherwise emit UNK
+    groupO.add_argument("--minconf", type=float, default=0.5, help="Minimum confidence threshold (softmax)")
+    # Optional model revision pin for reproducibility
+    groupO.add_argument("--revision", type=str, default=None, help="HF model revision to pin")
 
     groupL = parser.add_argument_group("Logging")
     groupL.add_argument('-q', '--quiet', action='store_true', help='Silent logging mode')
@@ -47,18 +55,68 @@ def initialization():
     groupL.add_argument('--logfile', type=argparse.FileType('a'), default=sys.stderr, help="Store log to a file")
 
     args = parser.parse_args()
+    # Allow environment to override CLI defaults for consistency across runners
+    # DOMAIN_TOPK / DOMAIN_MINCONF / DOMAIN_REVISION
+    env_topk = os.getenv("DOMAIN_TOPK")
+    if env_topk is not None:
+        try:
+            args.topk = int(env_topk)
+        except ValueError:
+            pass
+    env_minconf = os.getenv("DOMAIN_MINCONF")
+    if env_minconf is not None:
+        try:
+            args.minconf = float(env_minconf)
+        except ValueError:
+            pass
+    env_revision = os.getenv("DOMAIN_REVISION")
+    if env_revision:
+        args.revision = env_revision
+
     logging_setup(args)
     return args
 
 
+class NvDomainModel(nn.Module, PyTorchModelHubMixin):
+    """Lightweight head on top of a base encoder as in NVIDIA's model card."""
+    def __init__(self, config):
+        super().__init__()
+        # Support both dict-like and HF Config objects
+        base_model_name = getattr(config, "base_model", None) or (config.get("base_model") if isinstance(config, dict) else None)
+        if base_model_name is None:
+            raise ValueError("Missing 'base_model' in config for NvDomainModel")
+        self.model = AutoModel.from_pretrained(base_model_name)
+        hidden_size = self.model.config.hidden_size
+        fc_dropout = getattr(config, "fc_dropout", None) or (config.get("fc_dropout") if isinstance(config, dict) else 0.1)
+        id2label = getattr(config, "id2label", None) or (config.get("id2label") if isinstance(config, dict) else None)
+        num_labels = len(id2label) if id2label is not None else 26
+        self.dropout = nn.Dropout(fc_dropout)
+        self.fc = nn.Linear(hidden_size, num_labels)
+
+    def forward(self, input_ids, attention_mask):
+        features = self.model(input_ids=input_ids, attention_mask=attention_mask).last_hidden_state
+        dropped = self.dropout(features)
+        logits = self.fc(dropped)
+        # Return probabilities over classes using [CLS] token position (index 0)
+        return torch.softmax(logits[:, 0, :], dim=1)
+
+
 class DomainLabels:
-    def __init__(self):
+    def __init__(self, args):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.model_id = "EuropeanParliament/eurovoc_2025"
-        self.model = AutoModelForSequenceClassification.from_pretrained(self.model_id).to(self.device)
-        logging.info("Model loaded")
-        self.tokenizer = AutoTokenizer.from_pretrained(self.model_id)
+        self.model_id = "nvidia/multilingual-domain-classifier"
+        # Resolve revision
+        revision = args.revision
+        # Load config and model (NVIDIA hub mixin)
+        config = AutoConfig.from_pretrained(self.model_id, revision=revision)
+        self.model = NvDomainModel.from_pretrained(self.model_id, config=config, revision=revision).to(self.device)
+        logging.info("Domain classifier model loaded")
+        # Tokenizer pinned to same revision
+        self.tokenizer = AutoTokenizer.from_pretrained(self.model_id, revision=revision)
         logging.info("Tokenizer loaded")
+        # Inference config
+        self.topk = max(1, int(args.topk))
+        self.minconf = float(args.minconf)
 
     def get_labels_batch(self, docs_text):
         # Filter out empty or None texts to avoid tokenizer/model errors
@@ -66,6 +124,7 @@ class DomainLabels:
         if not filtered_texts:
             return []
 
+        # Tokenize inputs
         inputs = self.tokenizer(
             filtered_texts,
             return_tensors="pt",
@@ -74,20 +133,59 @@ class DomainLabels:
             max_length=512,
         ).to(self.device)
 
-        with torch.no_grad():
-            if self.device.type == "cuda":
-                with torch.autocast(device_type="cuda", dtype=torch.float16):
-                    logits = self.model(**inputs).logits
-            else:
-                # On CPU, avoid float16 autocast; optionally could use bfloat16 if available
-                logits = self.model(**inputs).logits
-        predicted = torch.argmax(logits, dim=1).cpu().tolist()
-        id2label = self.model.config.id2label
-        return [id2label[i] for i in predicted]
+        # Forward with safe autocast on CUDA only
+        try:
+            with torch.no_grad():
+                if self.device.type == "cuda":
+                    with torch.autocast(device_type="cuda", dtype=torch.float16):
+                        probs = self.model(inputs["input_ids"], inputs["attention_mask"])  # already softmax
+                else:
+                    # On CPU, avoid float16 autocast; optionally could use bfloat16 if available
+                    probs = self.model(inputs["input_ids"], inputs["attention_mask"])  # already softmax
+        except RuntimeError as e:
+            # Simple OOM mitigation: split the batch and process recursively
+            if "out of memory" in str(e).lower() and len(filtered_texts) > 1:
+                mid = len(filtered_texts) // 2
+                return self.get_labels_batch(filtered_texts[:mid]) + self.get_labels_batch(filtered_texts[mid:])
+            raise
+
+        # probs already in probability space
+        probs = probs.cpu()
+        # id2label expected in config
+        id2label = getattr(self.model, "config", None)
+        if id2label and hasattr(id2label, "id2label"):
+            id2label = id2label.id2label
+        else:
+            # Fallback: load from AutoConfig if not present
+            id2label = AutoConfig.from_pretrained(self.model_id).id2label
+
+        results = []
+        max_conf_values = []
+        for row in probs:
+            # Select top-k indices by confidence
+            values, indices = torch.topk(row, k=min(self.topk, row.shape[0]))
+            selected = []
+            for conf, idx in zip(values.tolist(), indices.tolist()):
+                if conf >= self.minconf:
+                    selected.append(id2label[idx])
+            # Fallback if nothing surpasses threshold
+            if not selected:
+                selected = ["UNK"]
+            results.extend(selected)
+            # Track max confidence for logging
+            max_conf_values.append(float(torch.max(row)))
+        # Log basic confidence stats in info/debug modes
+        if logging.getLogger().level <= logging.INFO and max_conf_values:
+            try:
+                avg_conf = sum(max_conf_values) / len(max_conf_values)
+                logging.info(f"Domain avg max-conf (batch): {avg_conf:.3f}")
+            except Exception:
+                pass
+        return results
 
 
 def perform_identification(args):
-    dl = DomainLabels()
+    dl = DomainLabels(args)
     buffer = []
     for line in args.input:
         if not args.raw:
