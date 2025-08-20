@@ -61,16 +61,26 @@ class DomainLabels:
         logging.info("Tokenizer loaded")
 
     def get_labels_batch(self, docs_text):
+        # Filter out empty or None texts to avoid tokenizer/model errors
+        filtered_texts = [t for t in docs_text if t]
+        if not filtered_texts:
+            return []
+
         inputs = self.tokenizer(
-            docs_text,
+            filtered_texts,
             return_tensors="pt",
             padding=True,
             truncation=True,
             max_length=512,
         ).to(self.device)
 
-        with torch.no_grad(), torch.autocast(device_type=self.device.type, dtype=torch.float16):
-            logits = self.model(**inputs).logits
+        with torch.no_grad():
+            if self.device.type == "cuda":
+                with torch.autocast(device_type="cuda", dtype=torch.float16):
+                    logits = self.model(**inputs).logits
+            else:
+                # On CPU, avoid float16 autocast; optionally could use bfloat16 if available
+                logits = self.model(**inputs).logits
         predicted = torch.argmax(logits, dim=1).cpu().tolist()
         id2label = self.model.config.id2label
         return [id2label[i] for i in predicted]
@@ -85,7 +95,8 @@ def perform_identification(args):
             doc_text = doc.get(args.field)
         else:
             doc_text = line
-        buffer.append(doc_text)
+        if doc_text:
+            buffer.append(doc_text)
         if len(buffer) < args.batchsize:
             continue
         labels = dl.get_labels_batch(buffer)

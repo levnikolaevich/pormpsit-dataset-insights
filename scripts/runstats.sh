@@ -77,6 +77,9 @@ hbs_langs=(hr sr bs me)
 registerlabels_langs=(af sq am ar hy as az eu be bn bs br bg my ca zh hr cs da nl en eo et tl fi fr gl ka de el gu ha he hi hu is id ga it ja jv \
 	kn kk km ko ku ky lo la lv lt mk mg ms ml mr mn ne no nn nb or om ps fa pl pt pa ro ru sa gd sr sd si sk sl so es su sw sv ta te th tr uk ur ug uz vi cy fy xh yi)
 
+# Use the same language support baseline for domain labels for now
+domainlabels_langs=("${registerlabels_langs[@]}")
+
 
 mkdir -p $datapath
 mkdir -p /work/transient
@@ -455,15 +458,21 @@ elif [ "$langformat" == "mono" ]; then
 
                 #Domain labels
                 if [ "$SKIPDLFLAG" = false ]; then
-                        source /work/venvs/venv-rl/bin/activate
-                        echo "Running domain labels..."
-                        if [ "$extension" == "zst" ] || [ "$extension" == "zstd" ]; then
-                                zstdcat $saved_file_path | python3 ./scripts/domainlabels.py --batchsize $GPU_BATCHSIZE > $tsv_file_path.dl
+                        if [[ " ${domainlabels_langs[*]} " =~ " $srclang " ]]; then
+                                source /work/venvs/venv-rl/bin/activate
+                                echo "Running domain labels..."
+                                if [ "$extension" == "zst" ] || [ "$extension" == "zstd" ]; then
+                                        zstdcat $saved_file_path | python3 ./scripts/domainlabels.py --batchsize $GPU_BATCHSIZE > $tsv_file_path.dl
+                                elif [ "$extension" == "parquet" ]; then
+                                        python3 scripts/deparquet.py $saved_file_path - | python3 ./scripts/domainlabels.py --batchsize $GPU_BATCHSIZE > $tsv_file_path.dl
+                                else
+                                        cat $saved_file_path | python3 ./scripts/domainlabels.py --batchsize $GPU_BATCHSIZE > $tsv_file_path.dl
+                                fi
+                                deactivate
+                                cat $tsv_file_path.dl | LC_ALL=C sort -S 50% --compress-program=zstd --parallel $JOBS | uniq -c | sort -nr > $tsv_file_path.dlcounts
                         else
-                                cat $saved_file_path | python3 ./scripts/domainlabels.py --batchsize $GPU_BATCHSIZE > $tsv_file_path.dl
+                                echo "Domain labels not supported for $srclang"
                         fi
-                        deactivate
-                        cat $tsv_file_path.dl | LC_ALL=C sort -S 50% --compress-program=zstd --parallel $JOBS | uniq -c | sort -nr > $tsv_file_path.dlcounts
                 else
                         echo "Skipping domain labels"
                 fi

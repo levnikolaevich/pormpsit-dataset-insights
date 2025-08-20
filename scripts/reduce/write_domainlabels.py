@@ -18,9 +18,15 @@ def main():
     stats = {}
     dl_dict = {}
     for line in args.dlcounts:
-        parts = line.split()
-        label = parts[1].strip()
-        count = int(parts[0].strip())
+        line = line.rstrip("\n")
+        if not line:
+            continue
+        try:
+            count_str, label = line.lstrip().split(maxsplit=1)
+            count = int(count_str)
+        except ValueError:
+            # Skip malformed lines
+            continue
         dl_dict[label] = count
     if dl_dict:
         stats["domain_labels"] = json.dumps(dl_dict)
