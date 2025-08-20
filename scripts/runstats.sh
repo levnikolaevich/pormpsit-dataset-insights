@@ -32,6 +32,13 @@ else
         SKIPRLFLAG=false
 fi
 
+if [[ $* == *--skip-domain-labels* ]] || [[ $* == *--no-domain-labels* ]]
+then
+        SKIPDLFLAG=true
+else
+        SKIPDLFLAG=false
+fi
+
 if [[ $* == *--debug* ]]
 then
         DEBUGFLAG=true
@@ -442,14 +449,29 @@ elif [ "$langformat" == "mono" ]; then
 		        else
         			echo "Register labels not supported for $srclang"
 		        fi
-		else
-			echo "Skipping register labels"
-		fi
+                else
+                        echo "Skipping register labels"
+                fi
+
+                #Domain labels
+                if [ "$SKIPDLFLAG" = false ]; then
+                        source /work/venvs/venv-rl/bin/activate
+                        echo "Running domain labels..."
+                        if [ "$extension" == "zst" ] || [ "$extension" == "zstd" ]; then
+                                zstdcat $saved_file_path | python3 ./scripts/domainlabels.py --batchsize $GPU_BATCHSIZE > $tsv_file_path.dl
+                        else
+                                cat $saved_file_path | python3 ./scripts/domainlabels.py --batchsize $GPU_BATCHSIZE > $tsv_file_path.dl
+                        fi
+                        deactivate
+                        cat $tsv_file_path.dl | LC_ALL=C sort -S 50% --compress-program=zstd --parallel $JOBS | uniq -c | sort -nr > $tsv_file_path.dlcounts
+                else
+                        echo "Skipping domain labels"
+                fi
 
         else
                 echo "Unsupported format \"$format\""
                 exit 1
-	fi
+        fi
 	
 	#Monolingual hardrules
 	if [[ " ${monocleaner_langs[*]} " =~ " $srclang " ]]; then
@@ -550,8 +572,12 @@ elif [ "$langformat" == "mono" ]; then
 		python3 /work/scripts/reduce/write_hardrules.py $tsv_file_path.hardrules $yaml_file_path $HR_MODEL
 	fi
 
-	if [ -f $tsv_file_path.rlcounts ] ; then
+        if [ -f $tsv_file_path.rlcounts ] ; then
                 python3 /work/scripts/reduce/write_registerlabels.py $tsv_file_path.rlcounts $yaml_file_path
+        fi
+
+        if [ -f $tsv_file_path.dlcounts ] ; then
+                python3 /work/scripts/reduce/write_domainlabels.py $tsv_file_path.dlcounts $yaml_file_path
         fi
 
         python3 ./scripts/reduce/addngrams.py $tsv_file_path".ngrams"  $yaml_file_path "src"
