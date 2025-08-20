@@ -1,37 +1,12 @@
 import logging
+import importlib
 from util import stdout_to_err
 
 import warnings as wrns
-with wrns.catch_warnings(),  stdout_to_err():
-    wrns.simplefilter(action='ignore', category=FutureWarning)    
-    import hebrew_tokenizer
-    
-import mecab_ko
-import MeCab
-import reldi_tokeniser
-import pyidaungsu
-import spacy_pkuseg as pkuseg
-import botok
+
 
 from sacremoses import MosesTokenizer
 from nltk.tokenize import WordPunctTokenizer, word_tokenize
-from sinling import SinhalaTokenizer
-from fitrat import word_tokenize as fitrat_word_tokenize
-from thai_segmenter import tokenize as thai_tokenize
-from indicnlp.tokenize import indic_tokenize
-from nlp_id.tokenizer import Tokenizer as IndonesianTokenizer
-from klpt.tokenize import Tokenize as KurdishTokenizer
-from pycantonese.word_segmentation import segment as cantonese_segment
-from laonlp.tokenize import word_tokenize as lao_tokenize
-from openodia import ud as openodia_tokenize
-from igbo_text import IgboText
-from etnltk.tokenize.am import word_tokenize as amharic_tokenizer
-from etnltk.tokenize.tg import word_tokenize as tigrinya_tokenizer
-
-try:
-    from bnlp import NLTKTokenizer
-except:
-    pass
 
 
 #Apparently mahaNLP overwrites the logging level to quiet-er than desired
@@ -128,6 +103,12 @@ class CustomTokenizer:
         
         self.lang = lang
         self.setTokenizer(lang)
+
+    def _fallback_missing(self, module_name):
+        self.tokenizer = WordPunctTokenizer()
+        self.toktype = "nltk_wordpunct"
+        self.warnings.append(f"warning_tok_missing_{module_name}")
+        self.warnings.append("warning_tok_nltk_wordpunct")
     
 
     def setTokenizer(self, lang):
@@ -155,96 +136,180 @@ class CustomTokenizer:
             self.warnings.append("warning_tok_nltk_punkt_"+nltk_langcode)           
 
         elif lang in MECAB_JA:
-            self.tokenizer = MeCab.Tagger("-Owakati")
-            self.toktype = "mecab"
+            try:
+                MeCab = importlib.import_module("MeCab")
+                self.tokenizer = MeCab.Tagger("-Owakati")
+                self.toktype = "mecab"
+            except ImportError:
+                self._fallback_missing("MeCab")
 
         elif lang in MECAB_KO:
-            self.tokenizer = mecab_ko.Tagger("-Owakati")
-            self.toktype = "mecab"            
+            try:
+                mecab_ko = importlib.import_module("mecab_ko")
+                self.tokenizer = mecab_ko.Tagger("-Owakati")
+                self.toktype = "mecab"
+            except ImportError:
+                self._fallback_missing("mecab_ko")
 
 #        elif lang in NLPASHTO_LANGS:
 #            self.tokenizer = word_segment(sent)
 #            self.toktype = "nlpashto"
         
         elif lang in RELDI_LANGS:
-            self.tokenizer = reldi_tokeniser
-            self.toktype = "reldi_" + lang        
+            try:
+                reldi_tokeniser = importlib.import_module("reldi_tokeniser")
+                self.tokenizer = reldi_tokeniser
+                self.toktype = "reldi_" + lang
+            except ImportError:
+                self._fallback_missing("reldi_tokeniser")
         elif lang in RELDI_FALLBACK.keys():
-            self.tokenizer = reldi_tokeniser
-            reldilang = RELDI_FALLBACK.get(lang)
-            self.toktype = "reldi_" + reldilang 
-            self.warnings.append("warning_tok_reldi_"+reldilang)          
+            try:
+                reldi_tokeniser = importlib.import_module("reldi_tokeniser")
+                self.tokenizer = reldi_tokeniser
+                reldilang = RELDI_FALLBACK.get(lang)
+                self.toktype = "reldi_" + reldilang
+                self.warnings.append("warning_tok_reldi_"+reldilang)
+            except ImportError:
+                self._fallback_missing("reldi_tokeniser")
         
         elif lang in PDS_LANGS:
-            self.tokenizer = pyidaungsu.tokenize
-            self.toktype = "pds"
+            try:
+                pyidaungsu = importlib.import_module("pyidaungsu")
+                self.tokenizer = pyidaungsu.tokenize
+                self.toktype = "pds"
+            except ImportError:
+                self._fallback_missing("pyidaungsu")
             
         elif lang in SINLING_LANGS:
-            self.tokenizer = SinhalaTokenizer()
-            self.toktype = "sinling"
+            try:
+                SinhalaTokenizer = importlib.import_module("sinling").SinhalaTokenizer
+                self.tokenizer = SinhalaTokenizer()
+                self.toktype = "sinling"
+            except ImportError:
+                self._fallback_missing("sinling")
 
         elif lang in FITRAT_LANGS:
-            self.tokenizer = fitrat_word_tokenize
-            self.toktype = "fitrat"        
+            try:
+                fitrat_word_tokenize = importlib.import_module("fitrat").word_tokenize
+                self.tokenizer = fitrat_word_tokenize
+                self.toktype = "fitrat"
+            except ImportError:
+                self._fallback_missing("fitrat")
             
         elif lang in BNLP_LANGS:
-            self.tokenizer = NLTKTokenizer()
-            self.toktype = "bnlp"
+            try:
+                NLTKTokenizer = importlib.import_module("bnlp").NLTKTokenizer
+                self.tokenizer = NLTKTokenizer()
+                self.toktype = "bnlp"
+            except ImportError:
+                self._fallback_missing("bnlp")
 
         elif lang in THAI_LANGS:
-            self.tokenizer = thai_tokenize
-            self.toktype = "thai"
+            try:
+                thai_tokenize = importlib.import_module("thai_segmenter").tokenize
+                self.tokenizer = thai_tokenize
+                self.toktype = "thai"
+            except ImportError:
+                self._fallback_missing("thai_segmenter")
 
         elif lang in INDIC_LANGS:
-            self.tokenizer = indic_tokenize
-            self.toktype = "indic_" + lang
+            try:
+                indic_tokenize = importlib.import_module("indicnlp.tokenize.indic_tokenize")
+                self.tokenizer = indic_tokenize
+                self.toktype = "indic_" + lang
+            except ImportError:
+                self._fallback_missing("indicnlp")
            
-        elif lang in PKUSEG_LANGS:           
-            self.tokenizer = pkuseg.pkuseg()
-            self.toktype = "pkuseg"        
+        elif lang in PKUSEG_LANGS:
+            try:
+                pkuseg = importlib.import_module("spacy_pkuseg")
+                self.tokenizer = pkuseg.pkuseg()
+                self.toktype = "pkuseg"
+            except ImportError:
+                self._fallback_missing("spacy_pkuseg")
                 
         elif lang in HEBREW_LANGS:
-            self.tokenizer = hebrew_tokenizer
-            self.toktype = "hebrew"
+            try:
+                with wrns.catch_warnings(), stdout_to_err():
+                    wrns.simplefilter(action='ignore', category=FutureWarning)
+                    hebrew_tokenizer = importlib.import_module("hebrew_tokenizer")
+                self.tokenizer = hebrew_tokenizer
+                self.toktype = "hebrew"
+            except ImportError:
+                self._fallback_missing("hebrew_tokenizer")
             
         elif lang in NLPID_LANGS:
-            self.tokenizer = IndonesianTokenizer()
-            self.toktype = "nlpid"
+            try:
+                IndonesianTokenizer = importlib.import_module("nlp_id.tokenizer").Tokenizer
+                self.tokenizer = IndonesianTokenizer()
+                self.toktype = "nlpid"
+            except ImportError:
+                self._fallback_missing("nlp_id")
 
         elif lang in BOTOK_LANGS:  #This is a little bit slow...
-            config=botok.config.Config(dialect_name="general")
-            self.tokenizer = botok.WordTokenizer(config)                          
-            self.toktype = "botok"
+            try:
+                botok = importlib.import_module("botok")
+                config = botok.config.Config(dialect_name="general")
+                self.tokenizer = botok.WordTokenizer(config)
+                self.toktype = "botok"
+            except ImportError:
+                self._fallback_missing("botok")
+
 
         elif lang in KLPT_LANGS:
-            if lang == "kmr":
-                self.tokenizer=KurdishTokenizer("Kurmanji", "Latin")
-            elif lang =="ckb":
-                self.tokenizer=KurdishTokenizer("Sorani", "Arabic")
-            self.toktype = "klpt"
+            try:
+                KurdishTokenizer = importlib.import_module("klpt.tokenize").Tokenize
+                if lang == "kmr":
+                    self.tokenizer = KurdishTokenizer("Kurmanji", "Latin")
+                elif lang == "ckb":
+                    self.tokenizer = KurdishTokenizer("Sorani", "Arabic")
+                self.toktype = "klpt"
+            except ImportError:
+                self._fallback_missing("klpt")
         
         elif lang in CANTONESE_LANGS:
-            self.tokenizer  = cantonese_segment
-            self.toktype = "pycantonese"
+            try:
+                cantonese_segment = importlib.import_module("pycantonese.word_segmentation").segment
+                self.tokenizer = cantonese_segment
+                self.toktype = "pycantonese"
+            except ImportError:
+                self._fallback_missing("pycantonese")
         
         elif lang in LAONLP_LANGS:
-            self.tokenizer = lao_tokenize
-            self.toktype = "laonlp"
+            try:
+                lao_tokenize = importlib.import_module("laonlp.tokenize").word_tokenize
+                self.tokenizer = lao_tokenize
+                self.toktype = "laonlp"
+            except ImportError:
+                self._fallback_missing("laonlp")
             
         elif lang in OPENODIA_LANGS:
-            self.tokenizer = openodia_tokenize.word_tokenizer
-            self.toktype = "openodia"
+            try:
+                openodia_tokenize = importlib.import_module("openodia.ud").word_tokenizer
+                self.tokenizer = openodia_tokenize
+                self.toktype = "openodia"
+            except ImportError:
+                self._fallback_missing("openodia")
             
         elif lang in IGBO_LANGS:
-            self.tokenizer = IgboText()
-            self.toktype = "igbo"
+            try:
+                IgboText = importlib.import_module("igbo_text").IgboText
+                self.tokenizer = IgboText()
+                self.toktype = "igbo"
+            except ImportError:
+                self._fallback_missing("igbo_text")
         
         elif lang in ETHIOPIC_LANGS:
-            if lang == "ti":
-                self.tokenizer = tigrinya_tokenizer
-            elif lang == "am":
-                self.tokenizer = amharic_tokenizer
-            self.toktype = "ethiopic"
+            try:
+                if lang == "ti":
+                    tigrinya_tokenizer = importlib.import_module("etnltk.tokenize.tg").word_tokenize
+                    self.tokenizer = tigrinya_tokenizer
+                elif lang == "am":
+                    amharic_tokenizer = importlib.import_module("etnltk.tokenize.am").word_tokenize
+                    self.tokenizer = amharic_tokenizer
+                self.toktype = "ethiopic"
+            except ImportError:
+                self._fallback_missing("etnltk")
             
         else:
             '''

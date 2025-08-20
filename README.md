@@ -23,6 +23,7 @@ If you need to access docker to run stuff inside:
 * sudo docker exec -it dat-webapp /bin/bash
 
 Code and data are located in `/work`. Yaml files served in the frontend must be placed in `/work/yaml_dir/`. In order to check that everything is working seamlessly, there are some tests scripts located in `/work/tests/` that you can run.
+Only the tokenizers for the languages you process need to be installed. See [tokenizers-info.md](tokenizers-info.md) for details.
 
 ## Generating stats
 
