@@ -15,13 +15,21 @@ JOBS_READCORPUS=$(($JOBS/3*2))
 
 GPU_BATCHSIZE=256
 
-# Optional Domain classification configuration via environment variables
-if [ ! -z "$DOMAIN_TOPK" ]; then
-        DL_TOPK_ARG="--topk $DOMAIN_TOPK"
+# Domain classification configuration (defaults + always pass to classifier)
+if [ -z "$DOMAIN_TOPK" ]; then
+        DOMAIN_TOPK=3
 fi
-if [ ! -z "$DOMAIN_MINCONF" ]; then
-        DL_MINCONF_ARG="--minconf $DOMAIN_MINCONF"
+if [ -z "$DOMAIN_MINCONF" ]; then
+        DOMAIN_MINCONF=0.5
 fi
+# Export so downstream reducers can record metadata
+export DOMAIN_TOPK
+export DOMAIN_MINCONF
+if [ ! -z "$DOMAIN_REVISION" ]; then
+        export DOMAIN_REVISION
+fi
+DL_TOPK_ARG="--topk $DOMAIN_TOPK"
+DL_MINCONF_ARG="--minconf $DOMAIN_MINCONF"
 if [ ! -z "$DOMAIN_REVISION" ]; then
         DL_REVISION_ARG="--revision $DOMAIN_REVISION"
 fi

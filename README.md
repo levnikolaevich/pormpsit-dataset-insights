@@ -50,14 +50,16 @@ The first two flags affect to the performance of the pipeline. You probably want
 
 ### Domain labels configuration
 
-Domain labels use `nvidia/multilingual-domain-classifier` ([HF model card](https://huggingface.co/nvidia/multilingual-domain-classifier)). Optional configuration via environment variables (picked up by `runstats.sh` and propagated to the classifier):
+Domain labels use `nvidia/multilingual-domain-classifier` ([HF model card](https://huggingface.co/nvidia/multilingual-domain-classifier)). Configuration via environment variables (read by `runstats.sh` and forwarded to the classifier):
 
-- `DOMAIN_TOPK` (int, default `3`): number of top labels per document to count.
-- `DOMAIN_MINCONF` (float, default `0.5`): minimum softmax confidence; if none exceed this threshold, `UNK` is emitted.
-- `DOMAIN_REVISION` (string, optional): model revision pin for reproducibility (applies to both model and tokenizer).
+- `DOMAIN_TOPK` (int, default `3`): number of top labels per document to count. Note that with `topk > 1`, a single document can contribute to multiple domain bins, so the sum of counts in `domain_labels` can exceed the number of documents.
+- `DOMAIN_MINCONF` (float, default `0.5`): minimum softmax confidence; if none exceed this threshold for a document, the document is counted as `UNK`.
+- `DOMAIN_REVISION` (string, optional): model revision pin for reproducibility (applies to both model and tokenizer). It is recommended to pin a specific revision in production to avoid upstream changes affecting results.
 - `DOMAIN_LANGS` (string, optional): space-separated allowlist of language codes for running domain classification. Defaults to the 52 languages supported by the model.
 
-Alternatively, you can pass the equivalent flags directly to the classifier script if you run it standalone: `--topk`, `--minconf`, `--revision`.
+Alternatively, you can pass the equivalent flags directly to the classifier if you run it standalone: `--topk`, `--minconf`, `--revision`. CLI flags take precedence over environment variables when provided.
+
+The generated stats YAML includes a `domain_labels_meta` field with minimal metadata: `model_id`, `revision`, `topk`, `minconf` used for the run.
 
 
 ### Other scripts
