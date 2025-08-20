@@ -441,7 +441,7 @@ export default function Report({ date, report }) {
       )}
       {report["domain_labels"] && (
         <div className="custom-chart">
-          <DomainLabels labels={report["domain_labels"]} />
+          <DomainLabels labels={report["domain_labels"]} footNote={footNote} />
         </div>
       )}
       {report.docs_segments && (
