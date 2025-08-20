@@ -11,9 +11,16 @@ import styles from "@/styles/DomainLabels.module.css";
 import { DataFormatter, numberFormatter } from "@/lib/helpers";
 
 function DomainLabels({ labels }) {
-  const data = Object.entries(labels)
+  const sorted = Object.entries(labels)
     .map(([name, value]) => ({ name, value }))
     .sort((a, b) => b.value - a.value);
+
+  const data = sorted.slice(0, 10);
+  const other = sorted.slice(10).reduce((sum, { value }) => sum + value, 0);
+
+  if (other > 0) {
+    data.push({ name: "Other", value: other });
+  }
 
   return (
     <div className={styles.domainLabels}>
