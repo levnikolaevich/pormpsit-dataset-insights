@@ -41,12 +41,6 @@ def initialization():
     )
     groupO.add_argument("--raw", action="store_true", help="True if the input is already raw, non-json text")
     groupO.add_argument("--batchsize", type=int, default=256, help="GPU batch size")
-    # Number of labels to emit per document (1 keeps previous behavior)
-    groupO.add_argument("--topk", type=int, default=3, help="Number of top labels to output per document")
-    # Minimum softmax confidence to accept a label; otherwise emit UNK
-    groupO.add_argument("--minconf", type=float, default=0.5, help="Minimum confidence threshold (softmax)")
-    # Optional model revision pin for reproducibility
-    groupO.add_argument("--revision", type=str, default=None, help="HF model revision to pin")
 
     groupL = parser.add_argument_group("Logging")
     groupL.add_argument('-q', '--quiet', action='store_true', help='Silent logging mode')
@@ -55,26 +49,6 @@ def initialization():
     groupL.add_argument('--logfile', type=argparse.FileType('a'), default=sys.stderr, help="Store log to a file")
 
     args = parser.parse_args()
-    # Respect CLI over env: only let env override if the corresponding CLI flag was not provided
-    # DOMAIN_TOPK / DOMAIN_MINCONF / DOMAIN_REVISION
-    if "--topk" not in sys.argv:
-        env_topk = os.getenv("DOMAIN_TOPK")
-        if env_topk is not None:
-            try:
-                args.topk = int(env_topk)
-            except ValueError:
-                pass
-    if "--minconf" not in sys.argv:
-        env_minconf = os.getenv("DOMAIN_MINCONF")
-        if env_minconf is not None:
-            try:
-                args.minconf = float(env_minconf)
-            except ValueError:
-                pass
-    if "--revision" not in sys.argv:
-        env_revision = os.getenv("DOMAIN_REVISION")
-        if env_revision:
-            args.revision = env_revision
 
     logging_setup(args)
     return args
@@ -108,25 +82,25 @@ class DomainLabels:
     def __init__(self, args):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.model_id = "nvidia/multilingual-domain-classifier"
-        # Resolve revision
-        revision = args.revision
         # Load config and model (NVIDIA hub mixin)
-        config = AutoConfig.from_pretrained(self.model_id, revision=revision)
-        self.model = NvDomainModel.from_pretrained(self.model_id, config=config, revision=revision).to(self.device)
+        config = AutoConfig.from_pretrained(self.model_id)
+        self.model = NvDomainModel.from_pretrained(self.model_id, config=config).to(self.device)
         self.model.eval()
         logging.info("Domain classifier model loaded")
         # Tokenizer pinned to same revision
-        self.tokenizer = AutoTokenizer.from_pretrained(self.model_id, revision=revision)
+        self.tokenizer = AutoTokenizer.from_pretrained(self.model_id)
         logging.info("Tokenizer loaded")
         # Inference config
-        self.topk = max(1, int(args.topk))
-        self.minconf = float(args.minconf)
+        self.topk = 3
+        self.minconf = 0.5
         # Cache id2label once
         cfg = getattr(self.model, "config", None)
         if cfg is not None and hasattr(cfg, "id2label"):
             self.id2label = cfg.id2label
         else:
             self.id2label = AutoConfig.from_pretrained(self.model_id).id2label
+        # Adaptive batch size starting point
+        self.working_batchsize = max(1, int(getattr(args, "batchsize", 256)))
 
     def get_labels_batch(self, docs_text):
         # Filter out empty or None texts to avoid tokenizer/model errors
@@ -134,59 +108,53 @@ class DomainLabels:
         if not filtered_texts:
             return []
 
-        # Tokenize inputs
-        inputs = self.tokenizer(
-            filtered_texts,
-            return_tensors="pt",
-            padding=True,
-            truncation=True,
-            max_length=512,
-        ).to(self.device)
-
-        # Forward with safe autocast on CUDA only
-        try:
-            with torch.inference_mode():
-                if self.device.type == "cuda":
-                    with torch.autocast(device_type="cuda", dtype=torch.float16):
-                        probs = self.model(inputs["input_ids"], inputs["attention_mask"])  # already softmax
-                else:
-                    # On CPU, avoid float16 autocast; optionally could use bfloat16 if available
-                    probs = self.model(inputs["input_ids"], inputs["attention_mask"])  # already softmax
-        except (RuntimeError, MemoryError) as e:
-            # Simple OOM mitigation: split the batch and process recursively
-            msg = str(e).lower()
-            if ("out of memory" in msg or "cuda error: out of memory" in msg or "oom" in msg) and len(filtered_texts) > 1:
-                mid = len(filtered_texts) // 2
-                return self.get_labels_batch(filtered_texts[:mid]) + self.get_labels_batch(filtered_texts[mid:])
-            raise
-
-        # probs already in probability space
-        probs = probs.cpu()
-        # id2label mapping cached at init
         id2label = self.id2label
-
         results = []
         max_conf_values = []
         unk_count = 0
-        for row in probs:
-            # Select top-k indices by confidence
-            values, indices = torch.topk(row, k=min(self.topk, row.shape[0]))
-            selected = []
-            for conf, idx in zip(values.tolist(), indices.tolist()):
-                if conf >= self.minconf:
-                    selected.append(id2label[idx])
-            # Fallback if nothing surpasses threshold
-            if not selected:
-                selected = ["UNK"]
-                unk_count += 1
-            results.extend(selected)
-            # Track max confidence for logging
-            max_conf_values.append(float(torch.max(row)))
+        i = 0
+        while i < len(filtered_texts):
+            current_bs = min(self.working_batchsize, len(filtered_texts) - i)
+            chunk = filtered_texts[i:i + current_bs]
+            try:
+                inputs = self.tokenizer(
+                    chunk,
+                    return_tensors="pt",
+                    padding=True,
+                    truncation=True,
+                    max_length=512,
+                ).to(self.device)
+                with torch.inference_mode():
+                    if self.device.type == "cuda":
+                        with torch.autocast(device_type="cuda", dtype=torch.float16):
+                            probs = self.model(inputs["input_ids"], inputs["attention_mask"])  # already softmax
+                    else:
+                        probs = self.model(inputs["input_ids"], inputs["attention_mask"])  # already softmax
+                probs = probs.cpu()
+                for row in probs:
+                    values, indices = torch.topk(row, k=min(self.topk, row.shape[0]))
+                    selected = []
+                    for conf, idx in zip(values.tolist(), indices.tolist()):
+                        if conf >= self.minconf:
+                            selected.append(id2label[idx])
+                    if not selected:
+                        selected = ["UNK"]
+                        unk_count += 1
+                    results.extend(selected)
+                    max_conf_values.append(float(torch.max(row)))
+                i += current_bs
+            except (RuntimeError, MemoryError) as e:
+                msg = str(e).lower()
+                if ("out of memory" in msg or "cuda error: out of memory" in msg or "oom" in msg) and current_bs > 1:
+                    self.working_batchsize = max(1, current_bs // 2)
+                    logging.info(f"Reducing domain batch size to {self.working_batchsize} due to OOM")
+                    continue
+                raise
         # Log basic confidence stats in info/debug modes
         if logging.getLogger().level <= logging.INFO and max_conf_values:
             try:
                 avg_conf = sum(max_conf_values) / len(max_conf_values)
-                logging.info(f"Domain avg max-conf (batch): {avg_conf:.3f}; UNK-rate: {unk_count}/{len(probs)}")
+                logging.info(f"Domain avg max-conf: {avg_conf:.3f}; UNK-rate: {unk_count}/{len(results)}")
             except Exception:
                 pass
         return results
